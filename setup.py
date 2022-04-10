@@ -16,12 +16,15 @@ except ImportError:
 
 import platform
 
-MIN_PYTHON_VERSION = ("3", "6")
+from pkg_resources import parse_version
 
-if platform.python_version_tuple() < MIN_PYTHON_VERSION:
+CURRENT_PYTHON_VERSION = platform.python_version()
+MIN_PYTHON_VERSION = "3.6"
+
+if parse_version(CURRENT_PYTHON_VERSION) < parse_version(MIN_PYTHON_VERSION):
     raise SystemExit(
         "Could not install langxa in the environment. It requires python "
-        f"version 3.6+, you are using {platform.python_version()}"
+        f"version 3.6+, you are using {CURRENT_PYTHON_VERSION}"
     )
 
 if __name__ == "__main__":

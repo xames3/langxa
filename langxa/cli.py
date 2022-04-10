@@ -9,7 +9,6 @@ import argparse
 import os
 import sys
 import textwrap
-from pprint import pprint
 from typing import Final
 from typing import Iterable
 from typing import List
@@ -22,7 +21,7 @@ import langxa
 from langxa._version import __doc__
 from langxa._version import __status__
 from langxa._version import __version__
-from langxa.interpreter import process
+from langxa.interpreter import process_input
 from langxa.logger import init
 
 # HACK: This patch ensures the colors are displayed on the Win32
@@ -33,7 +32,7 @@ from langxa.logger import init
 if os.name == "nt":
     os.system("color")
 
-# Do not change this!
+# NOTE: Do not change this!
 PROG: Final[str] = "langxa"
 TERMINAL_WIDTH: int = 75  # Can substitute with os.get_terminal_size()
 
@@ -239,7 +238,7 @@ def main(argv: Optional[Sequence] = None) -> int:
         )
     elif level == 10:
         logger.debug("Launching interpreter in DEBUG mode [logging]")
-    process()
+    process_input()
     return 0
 
 
