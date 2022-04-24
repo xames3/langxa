@@ -1,9 +1,12 @@
 """Tokenizer for langXA source code."""
 
+from __future__ import annotations
+
 from typing import Any
 from typing import Final
 from typing import NamedTuple
-from typing import Optional
+
+__all__ = ["DIGITS", "Token", "TokenType"]
 
 DIGITS: Final[str] = "0123456789"
 
@@ -48,16 +51,16 @@ class TokenType(NamedTuple):
             comma (,), etc.
     """
 
-    LT_NUMBER: str = "LT_NUMBER"
-    LT_STRING: str = "LT_STRING"
-    LT_BOOLEAN: str = "LT_BOOLEAN"
-    OP_PLUS: str = "OP_PLUS"
-    OP_MINUS: str = "OP_MINUS"
-    OP_TIMES: str = "OP_TIMES"
-    OP_DIVIDE: str = "OP_DIVIDE"
-    PN_LPAREN: str = "PN_LPAREN"
-    PN_RPAREN: str = "PN_RPAREN"
-    PN_WHITESPACE: str = "PN_WHITESPACE"
+    LT_NUMBER: str = "NUMBER"
+    LT_STRING: str = "STRING"
+    LT_BOOLEAN: str = "BOOLEAN"
+    OP_PLUS: str = "PLUS"
+    OP_MINUS: str = "MINUS"
+    OP_TIMES: str = "TIMES"
+    OP_DIVIDE: str = "DIVIDE"
+    PN_LPAREN: str = "LPAREN"
+    PN_RPAREN: str = "RPAREN"
+    PN_WHITESPACE: str = "WHITESPACE"
 
 
 class Token:
@@ -66,17 +69,15 @@ class Token:
     A token or a lexical unit is the smallest individual unit in a
     program. They are the building blocks of a language.
 
-    :param token_type: Token type.
+    :param type_: Token type.
     :param value: Value of the token, defaults to None.
     """
 
-    def __init__(self, token_type: str, value: Optional[Any] = None) -> None:
+    def __init__(self, type_: str, value: Any | None = None) -> None:
         """Initialize Token class with no value."""
-        self.token_type = token_type
-        self.value = value
+        type_ = type_.lower()
+        self.args = (f"{type_}={value}", type_)[value is None]
 
     def __repr__(self) -> str:
         """Return a printable representation of token instance."""
-        type_ = self.token_type[3:].lower()
-        _ = type_ if self.value is None else f"{type_}={self.value}"
-        return f"{type(self).__name__}({_})"
+        return f"{type(self).__name__}({self.args})"
