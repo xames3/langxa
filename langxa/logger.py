@@ -1,23 +1,25 @@
-"""Logging module to capture and control the langXA's output logs.
+"""Logging module to capture and control langXA's logs.
 
 The module provides the necessary abstractions for overriding the
 standard logging capabilities provided by default. This is done by
-monkey patching the objects from the ``logging`` module.
+monkey-patching objects from the logging module.
 
 This module is also responsible for rendering colors on the terminal
-for foreshadowing the severity of the logging levels. Besides this, we
-tend to capture all the inputs and outputs (stdin, stdout and stderr)
-from the terminal.
+for foreshadowing the severity of the logging levels. Besides this, it
+captures all the inputs and outputs (stdin, stdout and stderr) from the
+terminal.
 
-With that, the module also provides a couple of handlers which basically
-extend the normal usage of the this module. We could've used the builtin
-logging handlers but they don't allow to write the stdin input.
+Additionally, the module provides a couple of handlers which basically
+extend the normal usage of the this module.
 
-The handler implemented in this module allows us to write the stdin,
-stdout and stderr (basically anything that can be printed out) to an
-output file.
+The file handler implemented below allows us to write the stdin, stdout
+and stderr (basically anything that can be printed out) to an output
+file.
 """
 
+from __future__ import annotations
+
+import argparse
 import fnmatch
 import logging
 import os
@@ -28,27 +30,32 @@ from functools import cached_property
 from typing import IO
 from typing import Any
 from typing import Final
-from typing import List
 from typing import Mapping
-from typing import Optional
-from typing import Tuple
-from typing import Union
+from typing import Sequence
 
 __all__ = [
+    "ANSIFormatter",
     "FileHandler",
-    "ISO8601",
+    "Handler",
     "RotatingFileHandler",
     "StreamHandler",
+    "TTYInspector",
+    "customize_logger",
     "get_logger",
     "init",
 ]
 
-SysExcInfoType = Tuple[type, BaseException, Optional[types.TracebackType]]
+LOGGER_LEVEL: str | None = os.getenv("LANGXA_LOGGING_LEVEL")
+SKIP_LOGGING: str | None = os.getenv("LANGXA_SKIP_LOGGING")
 
-ISO8601: Final[str] = "%Y-%m-%dT%H:%M:%SZ"
 ANSI_ESCAPE_RE: Final[str] = r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
+LOGGER_NAME: Final[str] = "langxa.main"
+ISO8601: Final[str] = "%Y-%m-%dT%H:%M:%SZ"
 
-ATTRS: Tuple[str, ...] = ("color", "gray", "reset")
+LOGS_DIR: str = os.path.join(os.path.expanduser("~"), ".langxa")
+LOG_FILE: str = os.path.join(LOGS_DIR, "history.log")
+
+ANSI_ATTRS: Sequence[str] = ("color", "gray", "reset")
 # See https://stackoverflow.com/a/14693789/14316408 for the RegEx logic
 # behind the ANSI escape sequence.
 ANSI_HUES: Mapping[int, str] = {
@@ -61,24 +68,101 @@ ANSI_HUES: Mapping[int, str] = {
     10: "\x1b[38;5;14m",
     00: "\x1b[0m",
 }
+VERBOSITY_LEVELS: Mapping[int, int] = {0: 30, 1: 20, 2: 10}
+LOGGING_LEVELS: Mapping[str, int] = {
+    "TRACE": 60,
+    "FATAL": 50,
+    "CRITICAL": 50,
+    "ERROR": 40,
+    "WARN": 30,
+    "WARNING": 30,
+    "INFO": 20,
+    "DEBUG": 10,
+    "NOTSET": 00,
+}
 
-# Pre-compiling regex before is always helpful than doing every single
-# time at runtime.
 esc = re.compile(ANSI_ESCAPE_RE)
 
-_log = logging.getLogger("langxa.main")
+
+def _setup_logs(override: bool | str, path: str) -> str | None:
+    """Setup a log directory and log I/O from the stdin/out to the file.
+
+    The I/O logs are stored in the ``$HOME/.langxa`` directory for
+    redundancies and maintaining history*. In case the directory is
+    deleted or doesn't exist, this function will create it.
+
+    Although if this behavior is not wanted, you can skip logging
+    entirely by setting the environment variable "LANGXA_SKIP_LOGGING"
+    to ``TRUE``.
+
+    :param override: Set "LANGXA_SKIP_LOGGING" to True to override
+        logging.
+    :returns: Path of the log file if "LANGXA_SKIP_LOGGING" is not set
+        else None.
+    """
+    if override or override == "TRUE":  # Input can be a boolean too
+        return None
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
 
 
-def _use_color(status: bool) -> str:
-    """Return log format based on the status.
+def _skip_output_log(choice: bool) -> bool:
+    """Return whether to output logs to a file.
 
-    If status is True, colored log format is returned else non-colored
+    If the choice is set at an environment variable level by exporting
+    the value of "LANGXA_SKIP_LOGGING" to ``TRUE``, it will override the
+    passed argument. If nothing is set, it will continue to log output
+    to the file.
+
+    :param choice: Boolean flag from the passed argument.
+    :returns: Status whether to log file or not.
+    """
+    # This ensures that only ``TRUE`` is considered as a valid choice
+    # here. This is required, else any valid string would be considered
+    # as True and loop might accidentally execute.
+    if (SKIP_LOGGING and SKIP_LOGGING == "TRUE") or choice:
+        return True
+    return False
+
+
+def _select_log_level(level: int | str) -> int:
+    """Select which logging level to use.
+
+    If the logging level is set at an environment variable level by
+    exporting the value of "LANGXA_LOGGING_LEVEL" to a valid log level,
+    it will override the verbosity counter. If nothing is set, it will
+    use the value of verbosity for logging. Higher the counter, lower
+    the logging level.
+
+    :param level: Verbosity counter value or the implicit logging level.
+    :returns: Logging level.
+
+    .. seealso::
+
+        [1] Consider checking out the implementation of
+        :py:func:`main() <langxa.__main__.main()>` function to fully
+        understand the usage the ``level`` argument.
+    """
+    if LOGGER_LEVEL:
+        return LOGGING_LEVELS[LOGGER_LEVEL]
+    elif isinstance(level, str):  # This elif is unnecessary!
+        return LOGGING_LEVELS[level]
+    if level > 2:
+        level = 2  # Enables users to do -vv
+    return VERBOSITY_LEVELS[level]
+
+
+def _use_color(choice: bool) -> str:
+    """Return log format based on the choice.
+
+    If choice is True, colored log format is returned else non-colored
     format is returned.
 
-    :param status: Boolean value to allow colored logs.
-    :returns: Colored or non-colored log format based on status.
+    :param choice: Boolean value to allow colored logs.
+    :returns: Colored or non-colored log format based on choice.
     """
-    if status:
+    if choice:
         return (
             "%(gray)s%(asctime)s %(color)s%(levelname)8s%(reset)s "
             "%(gray)s%(stack)s:%(lineno)d%(reset)s : %(message)s"
@@ -94,33 +178,12 @@ class ANSIFormatter(logging.Formatter):
     attributes to generate an uniform and clear log message. The class
     adds gray hues to the log's metadata and colorizes the log levels.
 
-    :param fmt: Log message format, defaults to None.
-    :param datefmt: Log datetime format, defaults to None.
-
-    .. seealso::
-
-        [1] logging.Formatter.format()
-        [2] logging.Formatter.formatException()
+    :param fmt: Log message format.
+    :param datefmt: Log datetime format.
     """
 
-    def __init__(
-        self,
-        fmt: Optional[str] = None,
-        datefmt: Optional[str] = None,
-        color: bool = False,
-    ) -> None:
-        """Initialize the ANSIFormatter with default formats."""
-        if fmt is None:
-            # NOTE: This debugging message will never be logged using
-            # the existing ``get_logger()`` APIs. To see this debugging
-            # message, use a root logger.
-            _log.debug(
-                "No active format set for logging, falling back to default "
-                "format: default"
-            )
-            fmt = _use_color(color)
-        if datefmt is None:
-            datefmt = ISO8601
+    def __init__(self, fmt: str, datefmt: str) -> None:
+        """Initialize the ANSIFormatter with required formats."""
         self.fmt = fmt
         self.datefmt = datefmt
 
@@ -140,13 +203,13 @@ class ANSIFormatter(logging.Formatter):
         """
         # The same could've been done using ``hasattr()`` too. This
         # ``isatty`` is a special attribute which is injected by the
-        # ``langxa.logger._handlers.TTYInspector()`` class.
+        # ``langxa.logger.TTYInspector()`` class.
         if getattr(record, "isatty", False):
             setattr(record, "color", ANSI_HUES[record.levelno])
             setattr(record, "gray", ANSI_HUES[90])
             setattr(record, "reset", ANSI_HUES[00])
         else:
-            for attr in ATTRS:
+            for attr in ANSI_ATTRS:
                 setattr(record, attr, "")
 
     @staticmethod
@@ -154,17 +217,20 @@ class ANSIFormatter(logging.Formatter):
         """Remove ``color`` and ``reset`` attributes from the log
         record.
 
-        Think of this method as opposite of the ``colorize`` method.
-        This method prevents the record from writing un-readable ANSI
-        characters to a non-TTY interface.
+        This method is opposite of :py:meth:`colorize() <colorize()>`.
+        It prevents the record from writing un-readable ANSI characters
+        to a non-TTY interface.
 
         :param record: Instance of the logged event.
         """
-        for attr in ATTRS:
+        for attr in ANSI_ATTRS:
             delattr(record, attr)
 
     @staticmethod
-    def formatException(ei: Union[SysExcInfoType, Tuple[None, ...]]) -> str:
+    def formatException(
+        ei: tuple[type, BaseException, types.TracebackType | None]
+        | tuple[None, ...]
+    ) -> str:
         r"""Format exception information as text.
 
         This implementation does not work directly. The standard
@@ -180,7 +246,7 @@ class ANSIFormatter(logging.Formatter):
         if tbk:
             fnc, lineno = tbk.tb_frame.f_code.co_name, tbk.tb_lineno
         fnc = "on" if fnc in ("<module>", "<lambda>") else f"in {fnc}() on"
-        return f"{cls_.__name__}: {msg} line {lineno}"  # type: ignore[union-attr]
+        return f"{cls_.__name__}: {msg} line {lineno}"  # type: ignore
 
     @staticmethod
     def _stack(path: str, fnc: str) -> str:
@@ -216,9 +282,9 @@ class ANSIFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as text.
 
-        If any exception is captured then it is formatted using the
-        ``ANSIFormatter.formatException()`` and replaced with the
-        original message.
+        If any exception is captured then it is formatted using
+        the :py:meth:`formatException() <formatException()>` and
+        replaced with the original message.
 
         :param record: Instance of the logged event.
         :returns: Captured and formatted output log strings.
@@ -245,30 +311,26 @@ class Handler:
 
     This is the base handler class which acts as a placeholder to define
     the handler interface. Using this handler class, one can extend the
-    default behavior of the handlers present in the ``logging`` module.
+    default behavior of the handlers present in the logging module.
 
     :param handler: Handler instance which will output to a stream.
     :param formatter: Formatter instace to use for formatting.
-    :param level: Logging level of the logged event, defaults to None.
+    :param level: Minimum logging level of the event.
     """
 
     def __init__(
         self,
         handler: logging.Handler,
         formatter: logging.Formatter,
-        level: Optional[Union[int, str]] = None,
+        level: int | str,
     ) -> None:
-        """Initialize the Handler class with default level."""
+        """Initialize the Handler class."""
         self.handler = handler
         # Setting a formatter is technically not required, but this
         # handler deals with things which output something, either to
         # the TTY or to an output file. So providing a formatter makes
         # more sense here.
         self.handler.setFormatter(formatter)
-        if level is None:
-            level = logging.INFO
-            # NOTE: Level is optional, if nothing is passed it'll
-            # default to the ``logging.INFO``.
         self.handler.setLevel(level)
 
     def add_handler(self, logger: logging.Logger) -> None:
@@ -291,6 +353,7 @@ class FileHandler:
 
         The below class could be replaced by ``pathlib.Path()`` but it
         adds time and memory overhead.
+
     """
 
     def __init__(self, filename: str) -> None:
@@ -323,7 +386,7 @@ class FileHandler:
         return os.stat(self.filename).st_size
 
     @property
-    def siblings(self) -> List[str]:
+    def siblings(self) -> list[str]:
         """Return list of matching files in the parent directory."""
         return sorted(
             fnmatch.filter(os.listdir(self.parent), f"{self.basename}.*?")
@@ -346,10 +409,10 @@ class RotatingFileHandler(FileHandler):
     writing from stdin, stdout and stderr to a file.
 
     :param filename: Absolute path of the log file.
+    :param max_bytes: Maximum size in bytes after which the rollover
+        should happen.
     :param mode: Mode in which the file needs to be opened, defaults to
         append ``a`` mode.
-    :param max_bytes: Maximum size in bytes after which the rollover
-        should happen, defaults to 10 MB.
     :param encoding: Platform-dependent encoding for the file, defaults
         to None.
 
@@ -366,17 +429,14 @@ class RotatingFileHandler(FileHandler):
         implementation mimics the behavior of rotating file handler
         except the ``backupCount``.
 
-    .. seealso::
-
-        [1] logging.handlers.RotatingFileHandler()
     """
 
     def __init__(
         self,
         filename: str,
+        max_bytes: int,
         mode: str = "a",
-        max_bytes: int = 10000000,
-        encoding: Optional[str] = None,
+        encoding: str | None = None,
     ) -> None:
         """Open the file and use it as the stream for logging."""
         super().__init__(filename)
@@ -486,13 +546,9 @@ class RotatingFileHandler(FileHandler):
         return line
 
 
-class TTYInspector(logging.StreamHandler):
+class TTYInspector(logging.StreamHandler):  # type: ignore
     """A StreamHandler derivative which inspects if the output stream
     is a TTY or not.
-
-    .. seealso::
-
-        [1] logging.StreamHandler.format()
     """
 
     def format(self, record: logging.LogRecord) -> str:
@@ -525,23 +581,20 @@ class StreamHandler(Handler):
     :param stream: IO stream.
     :param formatter: Formatter instance to be used for formatting
         record.
-    :param level: Logging level of the logged event, defaults to None.
+    :param level: Minimum logging level of the event.
 
     .. note::
 
         This class does not close the stream, as ``sys.stdout`` or
         ``sys.stderr`` may be used.
 
-    .. seealso::
-
-        [1] langxa.logger._main.Handler()
     """
 
     def __init__(
         self,
-        stream: Optional[IO[str]],
+        stream: IO[str] | None,
         formatter: logging.Formatter,
-        level: Optional[Union[int, str]] = None,
+        level: int | str,
     ) -> None:
         """Initialize StreamHandler with a TTYInpsector stream."""
         super().__init__(TTYInspector(stream), formatter, level)
@@ -552,20 +605,33 @@ def get_logger(module: str) -> logging.Logger:
 
     This function is supposed to be used by the modules for logging.
     This logger is a child logger which reports logs back to the parent
-    logger defined by the ``langxa.logger._main.init()``.
+    logger defined by the :py:func:`init() <langxa.logger.init()>`.
 
     :param module: Module to be logged.
     :return: Logger instance.
     """
-    return logging.getLogger("langxa.main").getChild(module)
+    return logging.getLogger(LOGGER_NAME).getChild(module)
 
 
-def init(**kwargs: Any) -> logging.Logger:
+def init(
+    name: str = LOGGER_NAME,
+    level: int = logging.INFO,
+    fmt: str | None = None,
+    datefmt: str = ISO8601,
+    color: bool = True,
+    filename: str | None = None,
+    max_bytes: int = 10_000_000,
+    encoding: str | None = None,
+    filemode: str = "a",
+    skip_logging: bool = False,
+    handlers: list[logging.Handler] = [],
+    stream: IO[str] | None = sys.stderr,
+    capture_warnings: bool = True,
+) -> logging.Logger:
     """Initialize an application level logger.
 
     This function initializes an application level logger with default
-    configurations for the logging system. It accepts a lot of different
-    keyword arguments for customization.
+    configurations for the logging system.
 
     If handlers are provided as part of input, this function overrides
     the default behavior (logging to file and streaming colored outputs)
@@ -577,75 +643,112 @@ def init(**kwargs: Any) -> logging.Logger:
     ``RotatingFileHandler`` which writes to sys.stderr and an output
     log file respectively.
 
-    A number of optional keyword arguments may be specified, which can
-    alter the default behavior.
-
-    filename    Specifies that ``RotatingFileHandler`` should be
-                created with the provided filename and output should
-                be logged to a file.
-    filemode    Specifies the mode to open the file, if filename is
-                specified (if filemode is unspecified, it defaults to
-                ``a``).
-    format      Use the specified format string for the handler.
-    datefmt     Use the specified date/time format.
-    level       Set the root logger level to the specified level.
-    handlers    If specified, this should be an iterable of already
-                created handlers, which will be added to the root
-                handler.
-    encoding    If specified together with a filename, this encoding
-                is passed to the created ``RotatingFileHandler``,
-                causing it to be used when the file is opened.
-    max_bytes   If specified together with a filename, this saves the
-                output log files in chunks of provided bytes.
-    color       Boolean option to whether display colored log outputs on
-                the terminal or not.
-
-    :returns: Logger instance.
-
-    .. seealso::
-
-        [1] logging.basicConfig()
-        [2] langxa.logger._handlers.RotatingFileHandler()
-        [3] langxa.logger._handlers.StreamHandler()
+    :param name: Name for the logger, defaults to "langxa.main".
+    :param level: Minimum logging level of the event, defaults to INFO.
+    :param fmt: Log message format, defaults to None.
+    :param datefmt: Log datetime format, defaults to ISO8601 format.
+    :param color: Boolean option to whether display colored log outputs
+        on the terminal or not, defaults to True.
+    :param filename: Absolute path of the log file, defaults to None.
+    :param max_bytes: Maximum size in bytes after which the rollover
+        should happen, defaults to 10 MB.
+    :param encoding: Platform-dependent encoding for the file, defaults
+        to None.
+    :param filemode: Mode in which the file needs to be opened, defaults
+        to append ``a`` mode.
+    :param skip_logging: Boolean option to whether skip the logging
+        process, defaults to False.
+    :param handlers: List of various logging handlers to use, defaults
+        to [].
+    :param stream: IO stream, defaults to ``sys.stderr``.
+    :param capture_warnings: Boolean option to whether capture the
+        warnings while logging, defaults to True.
+    :return: Configured logger instance.
     """
-    name = kwargs.get("name", "langxa.main")
+    msg = ""
     logger = logging.getLogger(name)
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
         handler.close()
     if not logger.handlers:
-        level = kwargs.get("level", logging.INFO)
-        logger.setLevel(level)
-        fmt = kwargs.get("format")
-        datefmt = kwargs.get("datefmt")
-        color = kwargs.get("color", True)
-        formatter = ANSIFormatter(fmt, datefmt, color)
-        handlers = kwargs.get("handlers")
-        _msg = ""
-        if handlers is None:
-            handlers = []
-            stream = kwargs.get("stream", sys.stderr)
-            handlers.append(StreamHandler(stream, formatter, level))
-            filename = kwargs.get("filename")
-            filemode = kwargs.get("filemode", "a")
-            max_bytes = kwargs.get("max_bytes", 10000000)
-            encoding = kwargs.get("encoding")
-            _msg = " with StreamHandler (default)"
-            if filename:
+        level = _select_log_level(level)
+        if fmt is None:
+            fmt = _use_color(color)
+        formatter = ANSIFormatter(fmt, datefmt)
+        stream_handler = StreamHandler(stream, formatter, level)
+        msg = " with StreamHandler (default)"
+        handlers.append(stream_handler)  # type: ignore
+        if not _skip_output_log(skip_logging):
+            if filename is None:
+                filename = LOG_FILE
+                _setup_logs(skip_logging, filename)
                 rotator = RotatingFileHandler
                 sys.stdout = sys.stderr = sys.stdin = rotator(  # type: ignore
-                    filename, filemode, max_bytes, encoding
+                    filename, max_bytes, filemode, encoding
                 )
-                _msg += " and RotatingFileHandler (for output logging)"
+        logger.setLevel(level)
         for handler in handlers:
-            handler.add_handler(logger)  # type: ignore
-        capture_warnings = kwargs.get("capture_warnings", True)
+            if isinstance(handler, Handler):
+                handler.add_handler(logger)
+        msg += " and RotatingFileHandler (for output logging)"
         logging.captureWarnings(capture_warnings)
-        # FIXME: In case you are wondering why some of the logs are not
-        # being logged, it is primarily because of how the python's
-        # root logger works. If any log messages are created beyond this
-        # point, they'll be logged as the handlers have being
-        # configured. In case you want to have previous logs, use root
-        # logger instead.
-        _log.debug("Initializing an application level logger" + _msg)
+        logger.debug("Initializing an application level logger" + msg)
     return logger
+
+
+def customize_logger(parser: argparse.ArgumentParser) -> None:
+    """Parser for customizing the logger."""
+    parser.add_argument(
+        "-f",
+        "--file",
+        default=LOG_FILE,
+        help=(
+            "Path for logging and maintaining the historical log "
+            "(Default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--format",
+        help=(
+            "Logging message string format. To read more on the log record "
+            "attributes, see this: https://docs.python.org/3/library/logging."
+            "html#logrecord-attributes."
+        ),
+    )
+    parser.add_argument(
+        "--datefmt",
+        default=ISO8601,
+        help="Logging message datetime format (Default: %(default)s).",
+    )
+    parser.add_argument(
+        "-l",
+        "--level",
+        default=logging.WARNING,
+        help=(
+            "Minimum logging level for the message (Default: %(default)s). "
+            "The logging level can be overridden by setting the environment "
+            "variable 'LANGXA_LOGGING_LEVEL' (corresponding to "
+            "DEBUG, INFO, WARNING, ERROR and CRITICAL logging levels)."
+        ),
+    )
+    parser.add_argument(
+        "-b",
+        "--max-bytes",
+        default=10_000_000,
+        help="Output log file size in bytes (Default: %(default)s).",
+    )
+    parser.add_argument(
+        "--no-output",
+        action="store_true",
+        help=(
+            "Skips logging the I/O from stdin, stdout and stderr to the "
+            "log file. This behavior can be overridden by setting the "
+            "environment variable 'LANGXA_SKIP_LOGGING' to TRUE. If this is "
+            "set, it will carry more precedence."
+        ),
+    )
+    parser.add_argument(
+        "--no-color",
+        action="store_false",
+        help="Suppress colored output.",
+    )
