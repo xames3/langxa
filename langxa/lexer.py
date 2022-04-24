@@ -29,18 +29,20 @@ This module provides these abstractions that can seperate those pieces.
 
 .. seealso::
 
-    [1] https://rb.gy/gofmgt
+    [1] See this Medium post `here <https://rb.gy/gofmgt>`_ to build a
+    lexer in Python. The blog post doesn't do actually helps building a
+    lexer, but does a good job explaining it.
 """
 
-from typing import List
-from typing import Optional
-from typing import Tuple
+from __future__ import annotations
 
 from langxa.errors import Error
 from langxa.errors import InvalidCharacterError
 from langxa.tokenizer import DIGITS
 from langxa.tokenizer import Token
 from langxa.tokenizer import TokenType
+
+__all__ = ["Lexer", "Position"]
 
 tt = TokenType()
 
@@ -50,12 +52,13 @@ class Position:
 
     This class keeps a check on the position of the currently tokenized
     character by the lexer. It tracks its line and column number along
-    with its index with respect to the column. This helps us locating
-    the origin or the source of an syntactic error.
+    with its index with respect to the column. This helps in locating
+    the origin or the source of syntactic errors.
 
     .. seealso::
 
-        [1] langxa.lexer.Lexer()
+        [1] Checkout the implementation of :py:class:`Lexer() <Lexer()>`
+        for the usage of this class.
     """
 
     def __init__(
@@ -68,7 +71,7 @@ class Position:
         self.filename = filename
         self.input = input_
 
-    def _next(self, character: Optional[str]) -> "Position":
+    def _next(self, character: str | None) -> Position:
         """Move on to the next index and update line and column number,
         if necessary.
 
@@ -83,7 +86,7 @@ class Position:
             self.col = 0
         return self
 
-    def copy(self) -> "Position":
+    def copy(self) -> Position:
         """Create copy of positions to keep track of the errors."""
         return Position(self.idx, self.ln, self.col, self.filename, self.input)
 
@@ -101,7 +104,7 @@ class Lexer:
     a list which is returned when no character is found.
     """
 
-    character: Optional[str] = None
+    character: str | None = None
 
     def __init__(self, filename: str, input_: str) -> None:
         """Initialize Lexer with input from the interpreter."""
@@ -133,62 +136,7 @@ class Lexer:
         # that we should probably stop tokenizing.
         self.character = self.input[_] if _ < self.len else None
 
-    def tokenize(self) -> Tuple[List[Token], Optional[Error]]:
-        """Identify and add tokens from the input sequence.
-
-        This method defines "rules" and checks the type of the character
-        and returns the associated token with it. If an unknown
-        character is detected, it returns an error.
-
-        These said "rules" are nothing but token or character comparison
-        with the pre-defined values. If the character matches with the
-        value, it is added to the token list and returned back.
-
-        :returns: List of detected tokens and error, if any.
-        """
-        tokens: List[Token] = []
-        while self.character:
-            if self.character in DIGITS:
-                tokens.append(self.number())
-            elif self.character in " \t\f":
-                # NOTE: This is optional, technically we should be
-                # leaving this as it is and skip adding this to the
-                # tokens list, but adding it for the sake of brevity.
-                tokens.append(Token(tt.PN_WHITESPACE))
-                self._next()
-            elif self.character == "+":
-                tokens.append(Token(tt.OP_PLUS))
-                self._next()
-            elif self.character == "-":
-                tokens.append(Token(tt.OP_MINUS))
-                self._next()
-            elif self.character == "*":
-                tokens.append(Token(tt.OP_TIMES))
-                self._next()
-            elif self.character == "/":
-                tokens.append(Token(tt.OP_DIVIDE))
-                self._next()
-            elif self.character == "(":
-                tokens.append(Token(tt.PN_LPAREN))
-                self._next()
-            elif self.character == ")":
-                tokens.append(Token(tt.PN_RPAREN))
-                self._next()
-            else:
-                # NOTE: We save the position from the point where the
-                # error actually began. This is needed for displaying
-                # this information back to the
-                err_start = self.pos.copy()
-                # We need to save the invalid or untokenizable character
-                # so that we can raise it as an error.
-                _ = self.character
-                self._next()
-                return [], InvalidCharacterError(
-                    err_start, self.pos, f"Couldn't tokenize {_!r}"
-                )
-        return tokens, None
-
-    def number(self) -> Token:
+    def _number(self) -> Token:
         """Return number token, either int or float from input text.
 
         This method detects if a character is a digit (0-9) or not and
@@ -216,3 +164,52 @@ class Lexer:
             return Token(tt.LT_NUMBER, int(tmp))
         except ValueError:
             return Token(tt.LT_NUMBER, float(tmp))
+
+    def tokenize(self) -> tuple[list[Token], Error | None]:
+        """Identify and add tokens from the input sequence.
+
+        This method defines "rules" and checks the type of the character
+        and returns the associated token with it. If an unknown
+        character is detected, it returns an error.
+
+        These said "rules" are nothing but token or character comparison
+        with the pre-defined values. If the character matches with the
+        value, it is added to the token list and returned back.
+
+        :returns: List of detected tokens and error, if any.
+        """
+        tokens: list[Token] = []
+        while self.character:
+            if self.character in DIGITS:
+                tokens.append(self._number())
+            elif self.character in " \t\f":
+                self._next()
+            elif self.character == "+":
+                tokens.append(Token(tt.OP_PLUS))
+                self._next()
+            elif self.character == "-":
+                tokens.append(Token(tt.OP_MINUS))
+                self._next()
+            elif self.character == "*":
+                tokens.append(Token(tt.OP_TIMES))
+                self._next()
+            elif self.character == "/":
+                tokens.append(Token(tt.OP_DIVIDE))
+                self._next()
+            elif self.character == "(":
+                tokens.append(Token(tt.PN_LPAREN))
+                self._next()
+            elif self.character == ")":
+                tokens.append(Token(tt.PN_RPAREN))
+                self._next()
+            else:
+                # NOTE: We save the position from the point where the
+                # error actually began. This is needed for displaying
+                # this information back to the interpreter.
+                start = self.pos.copy()
+                # We need to save the invalid or untokenizable character
+                # so that we can raise it as an error.
+                description = f"Couldn't tokenize {self.character!r}"
+                self._next()
+                return [], InvalidCharacterError(start, self.pos, description)
+        return tokens, None
