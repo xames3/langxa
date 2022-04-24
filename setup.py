@@ -16,7 +16,7 @@ except ImportError:
 
 import platform
 
-from pkg_resources import parse_version
+from pkg_resources import parse_version  # type: ignore
 
 CURRENT_PYTHON_VERSION = platform.python_version()
 MIN_PYTHON_VERSION = "3.6"
