@@ -6,10 +6,11 @@ This module hosts all the errors raised by langXA and its derivatives.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from typing import Optional
 
 if TYPE_CHECKING:
     from langxa.lexer import Position
+
+__all__ = ["Error", "InvalidCharacterError", "langXABaseError"]
 
 
 class langXABaseError(Exception):
@@ -17,6 +18,9 @@ class langXABaseError(Exception):
 
     This exception class is meant for subclassing exceptions which are
     required for langXA's internals.
+
+    :param description: Custom or runtime description of the error.
+    :var _description: Default or generic description of the error.
 
     .. warning::
 
@@ -27,7 +31,7 @@ class langXABaseError(Exception):
 
     _description: str
 
-    def __init__(self, description: Optional[str] = None) -> None:
+    def __init__(self, description: str | None = None) -> None:
         """Initialize exception with error description."""
         if description:
             self._description = description
@@ -37,6 +41,13 @@ class langXABaseError(Exception):
 class langXACodeError(langXABaseError):
     """Error to be raised when there is an exception while running the
     langXA code.
+
+    :param start: Starting position of the error.
+    :param end: Ending position of the error.
+    :param description: Custom or runtime description of the error,
+        defaults to None.
+    :var _offset: Number of characters to match the interpreter prefix.
+    :var _description: Default or generic description of the error.
     """
 
     _offset: int
@@ -44,25 +55,24 @@ class langXACodeError(langXABaseError):
 
     def __init__(
         self,
-        err_start: Position,
-        err_end: Position,
-        description: Optional[str] = None,
+        start: Position,
+        end: Position,
+        description: str | None = None,
     ) -> None:
         """Initialize langXACodeError with error positions and a
         description.
         """
-        self.err_start = err_start
-        self.err_end = err_end
-        self.error = type(self).__name__
+        self.start = start
+        self.end = end
         super().__init__(description)
 
     @property
     def message(self) -> str:
         """Output message to display when an error occurs."""
         return (
-            f"File {self.err_start.filename!r}, line {self.err_start.ln + 1}, "
-            f"col {self.err_start.idx + 1}\n... [{'x' * (self._offset)}]: "
-            f"{self.error}: {self._description}"
+            f"File {self.start.filename!r} at line {self.start.ln + 1}, "
+            f"col {self.start.idx + 1}\n... [{'x' * (self._offset)}]: "
+            f"{type(self).__name__}: {self._description}"
         )
 
 

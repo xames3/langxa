@@ -5,7 +5,7 @@ Changelog and version history for langXA.
     Built and setup the structure for the language.
 """
 
-__all__ = ["__version__"]
+__all__ = ["__doc__", "__status__", "__version__"]
 
 __version__ = "0.0.1"
 __status__ = "ALPHA"
